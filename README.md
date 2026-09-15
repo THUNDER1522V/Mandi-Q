@@ -1,5 +1,6 @@
 # MANDIQ — APMC FairProcure Platform
 ### Next-Generation Cryptographic Governance & Fair Agricultural Intake Engine
+AI-powered Fair Procurement Platform for APMCs | React • FastAPI • PostgreSQL • AI Voice Agent • Hackathon 2026
 
 [![CI/CD Pipeline](https://github.com/mandiq/mandiq-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/mandiq/mandiq-platform/actions)
 [![Python 3.11](https://img.shields.io/badge/Python-3.11%20%7C%203.12-blue.svg)](https://www.python.org/)
