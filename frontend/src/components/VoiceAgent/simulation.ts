@@ -11,7 +11,7 @@ import type {
 } from './types';
 
 // ── IVR Script (Hindi) ───────────────────────────────────────────────────────
-export const IVR_SCRIPTS: Record<PhoneState, string[]> = {
+export const IVR_SCRIPTS: Partial<Record<PhoneState, string[]>> = {
   idle: [],
   calling: [],
   connected: [
@@ -106,6 +106,8 @@ export function buildBookingResult(config: CallerConfig, token: string): Booking
     token,
     slotTime,
     date: dateStr,
+    crop: config.crop,
+    apmcGate: 'Gate 1 (North Entry)',
     smsText: `MANDIQ: Token ${token} confirmed. ${config.crop} slot: ${dateStr} ${slotTime}. Karnal APMC Gate 1. -MANDIQ`,
   };
 }

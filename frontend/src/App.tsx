@@ -30,6 +30,8 @@ import { AlertsDrawer } from './components/AlertsDrawer';
 import { ProcurementTimeline } from './components/ProcurementTimeline';
 import { OverrideModal } from './components/OverrideModal';
 import type { GatePassFarmerData } from './components/DigitalGatePass';
+import { useNotifications } from './hooks/useNotifications';
+import { MockNotificationOverlay } from './components/MockNotificationOverlay';
 import { VoiceAgentPage } from './components/VoiceAgent';
 
 // Lazy loaded for performance & code-splitting (html5-qrcode and SVG printing assets)
@@ -157,6 +159,9 @@ export function App() {
   const abortControllerRef = useRef<AbortController | null>(null);
   const prevErrorRef = useRef<string | null>(null);
   const prevAlertIdsRef = useRef<Set<string>>(new Set());
+
+  // ── Sprint 8 Mock Notifications ──────────────────────────
+  const { latestNotification, clearLatest } = useNotifications();
 
   /* ── Derived from Backend as Source of Truth ────────────── */
   const metrics = api.calculateMetrics(summary, farmers);
@@ -1316,7 +1321,68 @@ export function App() {
             {/* ── TAB 5: VOICE AGENT — NOKIA IVR SIMULATION ───────────────── */}
             {activeTab === 'voice' && (
               <div style={{ padding: '4px 0' }}>
-                <VoiceAgentPage />
+                <VoiceAgentPage
+                  onBookingConfirmed={(booking) => {
+                    const rawNum = booking.rawTokenNumber || parseInt(booking.token.replace(/\D/g, ''), 10) || 101;
+                    const newFarmerBooking: FarmerBooking = {
+                      id: `voice-${booking.token}-${Date.now()}`,
+                      farmer_id: (booking as any).farmerId || undefined,
+                      token: booking.token,
+                      rawTokenNumber: rawNum,
+                      farmerName: booking.name || 'Farmer',
+                      phone: booking.phone || '+91 98120 44821',
+                      village: (booking as any).village || 'Karnal Mandi',
+                      crop: booking.crop || 'Wheat',
+                      quantityQuintals: 50,
+                      vehicleType: 'Tractor Trolley',
+                      vehicleNumber: `HR 05 ${String.fromCharCode(65 + (rawNum % 26))}${String.fromCharCode(65 + ((rawNum + 3) % 26))} ${String(1000 + (rawNum * 87) % 9000).slice(0, 4)}`,
+                      slotTime: booking.slotTime || '10:00 AM - 12:00 PM',
+                      status: 'WAITING',
+                      bookedVia: 'Voice (Sarvam AI)',
+                      bookingTimestamp: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+                    };
+
+                    // 1. Immediately update Today's Bookings & Live Queue
+                    setFarmers((prev) => {
+                      if (prev.some((f) => f.token === booking.token || f.rawTokenNumber === rawNum)) return prev;
+                      return [newFarmerBooking, ...prev];
+                    });
+
+                    // 2. Immediately update Summary Statistics
+                    setSummary((prev) => {
+                      if (!prev) return prev;
+                      return {
+                        ...prev,
+                        total_farmers: (prev.total_farmers || 0) + 1,
+                        waiting: (prev.waiting || 0) + 1,
+                      };
+                    });
+
+                    // 3. Update Notifications & Recent Activity
+                    showToast(`Voice Agent: Slot booked for ${booking.name || 'Farmer'} (${booking.crop}) · Token ${booking.token}`);
+                    addActivityEvent(
+                      `Voice AI Booking · ${booking.token}`,
+                      'sms',
+                      `Slot confirmed for ${booking.name || 'Farmer'} · ${booking.crop} · ${booking.date} ${booking.slotTime}`
+                    );
+
+                    // 4. Update Last Updated Timer
+                    setLastSyncTime(
+                      new Date().toLocaleTimeString('en-US', {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        second: '2-digit',
+                        hour12: false,
+                      })
+                    );
+
+                    // 5. Trigger concurrent backend refresh
+                    void refreshAll();
+                  }}
+                  onDashboardSync={() => {
+                    void refreshAll();
+                  }}
+                />
               </div>
             )}
 
@@ -1534,6 +1600,11 @@ export function App() {
           showToast('Intake override rejected.');
           void refreshAll({ force: true });
         }}
+      />
+
+      <MockNotificationOverlay 
+        latestNotification={latestNotification} 
+        onClear={clearLatest} 
       />
 
       <Suspense fallback={null}>

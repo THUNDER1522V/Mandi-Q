@@ -1,572 +1,474 @@
-import React, { useState, useEffect, useCallback, useRef, memo } from 'react';
-import { Phone, PhoneOff, Mic, MicOff, CheckCircle2 } from 'lucide-react';
-import type {
-  PhoneState,
-  Persona,
-  CallerConfig,
-  TimelineEvent,
-  TranscriptLine,
-  BookingResult,
-  Language,
-  CropType,
-  VoiceProvider,
-} from './types';
+import React, { useState, useEffect, useCallback, memo } from 'react';
 import {
-  IVR_SCRIPTS,
-  createTimelineEvent,
-  generateToken,
-  buildBookingResult,
-  generateVoiceConversation,
-} from './simulation';
-import { LCD, Keypad, VoiceTranscript, SMSCard } from './PhoneComponents';
+  Volume2,
+  VolumeX,
+  PhoneCall,
+  RotateCcw,
+  MessageSquareText,
+  Activity,
+  User,
+  History,
+} from 'lucide-react';
+import type { Persona } from './types';
+import type { BookingDetails } from '../../types/voice';
+import { DEMO_PERSONAS } from './conversation';
+import { audioEngine } from './audio/audioEngine';
+import { useCallSession } from '../../hooks/useCallSession';
+import { useIVR } from '../../hooks/useIVR';
+import { useSpeech } from '../../hooks/useSpeech';
+import { useNotifications } from '../../hooks/useNotifications';
+import { PhoneShell } from './components/PhoneShell';
+import { PhoneScreen } from './components/PhoneScreen';
 import styles from './VoiceAgent.module.css';
 
-// ── PERSONAS ──────────────────────────────────────────────────────────────────
-const PERSONAS: Persona[] = [
-  { id: 'p1', name: 'Ramesh Singh', language: 'Hindi', phone: '9812034501', crop: 'Wheat', village: 'Nilokheri' },
-  { id: 'p2', name: 'Harpreet Singh', language: 'Punjabi', phone: '9815067823', crop: 'Paddy', village: 'Taraori' },
-  { id: 'p3', name: 'Birju Yadav', language: 'Hindi', phone: '9897045612', crop: 'Mustard', village: 'Gharaunda' },
-];
+interface VoiceAgentPageProps {
+  onBookingConfirmed?: (booking: BookingDetails | any) => void;
+  onDashboardSync?: () => void;
+}
 
-const DEFAULT_CONFIG: CallerConfig = {
-  name: 'Ramesh Singh',
-  phone: '9812034501',
-  language: 'Hindi',
-  crop: 'Wheat',
-  provider: 'Sarvam AI',
-};
+export const VoiceAgentPage: React.FC<VoiceAgentPageProps> = memo(({
+  onBookingConfirmed,
+  onDashboardSync,
+}) => {
+  const [activePersonaId, setActivePersonaId] = useState<string>('p1');
+  const [isMuted, setIsMuted] = useState<boolean>(() => audioEngine.isAudioMuted());
 
-// ── MAIN VOICE AGENT PAGE ─────────────────────────────────────────────────────
-export const VoiceAgentPage: React.FC = memo(() => {
-  const [phoneState, setPhoneState] = useState<PhoneState>('idle');
-  const [config, setConfig] = useState<CallerConfig>(DEFAULT_CONFIG);
-  const [activePersona, setActivePersona] = useState<string>('p1');
-  const [durationSecs, setDurationSecs] = useState(0);
-  const [lastKey, setLastKey] = useState('');
-  const [pressedKey, setPressedKey] = useState('');
-  const [isVoiceMode, setIsVoiceMode] = useState(false);
-  const [isTyping, setIsTyping] = useState(false);
-  const [isVibrating, setIsVibrating] = useState(false);
+  // 0. Mock Notifications
+  const { notifications: mockNotifications } = useNotifications();
 
-  const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
-  const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
-  const [booking, setBooking] = useState<BookingResult | null>(null);
+  // 1. Subtitle & Progressive Speech Engine
+  const { subtitles, isSpeaking, speak, clearSubtitles } = useSpeech({
+    typingSpeedMs: 24,
+  });
 
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const stateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const transcriptBodyRef = useRef<HTMLDivElement>(null);
+  // 2. Call Session Lifecycle State Machine
+  const {
+    callState,
+    caller,
+    setCaller,
+    booking,
+    statusResult,
+    history,
+    durationSeconds,
+    isVibrating,
+    currentPrompt,
+    addTurn,
+    triggerVibrate,
+    triggerIncomingCall,
+    acceptCall,
+    rejectCall,
+    endCall,
+    openCropMenu,
+    executeBooking,
+    executeStatusCheck,
+    executeAIVoiceMode,
+    handleError,
+    resetSession,
+  } = useCallSession({
+    onBookingComplete: onBookingConfirmed,
+    onDashboardSync,
+  });
 
-  // Auto-scroll transcript
+  // Sync spoken prompts with subtitle typewriter engine
   useEffect(() => {
-    if (transcriptBodyRef.current) {
-      transcriptBodyRef.current.scrollTop = transcriptBodyRef.current.scrollHeight;
-    }
-  }, [transcript, isTyping]);
-
-  // Duration timer
-  useEffect(() => {
-    if (phoneState === 'connected' || phoneState === 'ivr_menu' || phoneState === 'crop_selection') {
-      timerRef.current = setInterval(() => setDurationSecs((s) => s + 1), 1000);
+    if (currentPrompt) {
+      speak(currentPrompt);
     } else {
-      if (timerRef.current) clearInterval(timerRef.current);
-      if (phoneState === 'idle') setDurationSecs(0);
+      clearSubtitles();
     }
-    return () => { if (timerRef.current) clearInterval(timerRef.current); };
-  }, [phoneState]);
+  }, [currentPrompt, speak, clearSubtitles]);
 
-  const pushTimeline = useCallback((event: string, type: TimelineEvent['type']) => {
-    setTimeline((prev) => [createTimelineEvent(event, type), ...prev.slice(0, 19)]);
-  }, []);
-
-  const pushTranscript = useCallback((speaker: 'AI' | 'Farmer', text: string) => {
-    const entry: TranscriptLine = {
-      id: `t-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
-      speaker,
-      text,
-      timestamp: new Date().toLocaleTimeString('en-IN', { hour12: false }),
-    };
-    setTranscript((prev) => [...prev, entry]);
-  }, []);
-
-  const triggerVibrate = useCallback(() => {
-    setIsVibrating(true);
-    setTimeout(() => setIsVibrating(false), 450);
-  }, []);
-
-  // ── Call Flow ─────────────────────────────────────────────────────────────
-  const handleCall = useCallback(() => {
-    if (phoneState !== 'idle') return;
-    setPhoneState('calling');
-    setTranscript([]);
-    setTimeline([]);
-    setBooking(null);
-    setLastKey('');
-    triggerVibrate();
-    pushTimeline('Call started', 'system');
-
-    // After 2.5s → connected
-    stateTimerRef.current = setTimeout(() => {
-      setPhoneState('connected');
-      pushTimeline('Connected to MANDIQ IVR', 'ai');
-      setIsTyping(true);
-
-      // Greeting
-      setTimeout(() => {
-        setIsTyping(false);
-        IVR_SCRIPTS.connected.forEach((line, i) => {
-          setTimeout(() => {
-            pushTranscript('AI', line);
-            if (i === IVR_SCRIPTS.connected.length - 1) {
-              pushTimeline('Greeting played', 'ai');
-              setTimeout(() => {
-                setPhoneState('ivr_menu');
-                pushTimeline('IVR menu presented', 'ai');
-                setIsTyping(true);
-                setTimeout(() => {
-                  setIsTyping(false);
-                  IVR_SCRIPTS.ivr_menu.forEach((l, j) => {
-                    setTimeout(() => pushTranscript('AI', l), j * 800);
-                  });
-                }, 600);
-              }, 800);
-            }
-          }, i * 900);
-        });
-      }, 1200);
-    }, 2500);
-  }, [phoneState, pushTimeline, pushTranscript, triggerVibrate]);
-
-  const handleHangup = useCallback(() => {
-    if (stateTimerRef.current) clearTimeout(stateTimerRef.current);
-    setPhoneState('idle');
-    setIsVoiceMode(false);
-    setIsTyping(false);
-    triggerVibrate();
-    if (phoneState !== 'idle') pushTimeline('Call ended', 'system');
-  }, [phoneState, pushTimeline, triggerVibrate]);
-
-  // ── Keypad Press ──────────────────────────────────────────────────────────
-  const handleKey = useCallback((key: string) => {
-    if (isVoiceMode) return;
-    setPressedKey(key);
-    setTimeout(() => setPressedKey(''), 180);
-    setLastKey(key);
-    triggerVibrate();
-
-    if (phoneState === 'ivr_menu' && key === '1') {
-      pushTimeline('Pressed 1 — Slot Booking', 'user');
-      pushTranscript('Farmer', '1');
-      setIsTyping(true);
-      setTimeout(() => {
-        setIsTyping(false);
-        setPhoneState('crop_selection');
-        pushTimeline('Crop selection menu', 'ai');
-        IVR_SCRIPTS.crop_selection.forEach((l, i) => {
-          setTimeout(() => pushTranscript('AI', l), i * 800 + 400);
-        });
-      }, 1000);
-    } else if (phoneState === 'ivr_menu' && (key === '2' || key === '3')) {
-      pushTimeline(`Pressed ${key}`, 'user');
-      pushTranscript('Farmer', key);
-      pushTranscript('AI', key === '2' ? 'Aapki booking active hai. Token TK-318.' : 'Complaint department band hai. 9 AM se 5 PM.');
-    } else if (phoneState === 'crop_selection') {
-      const crops: Record<string, string> = { '1': 'Gehun (Wheat)', '2': 'Dhan (Paddy)', '3': 'Sarson (Mustard)', '4': 'Kapas (Cotton)' };
-      if (crops[key]) {
-        pushTimeline(`Crop selected: ${crops[key]}`, 'user');
-        pushTranscript('Farmer', key);
-        setIsTyping(true);
-        setTimeout(() => {
-          setIsTyping(false);
-          setPhoneState('confirmation');
-          pushTimeline('Slot booking confirmed', 'success');
-          IVR_SCRIPTS.confirmation.forEach((l, i) => {
-            setTimeout(() => {
-              pushTranscript('AI', l);
-              if (i === IVR_SCRIPTS.confirmation.length - 1) {
-                const token = generateToken();
-                const result = buildBookingResult(config, token);
-                setBooking(result);
-                pushTimeline('SMS sent to farmer', 'sms');
-                setTimeout(() => setPhoneState('completed'), 2000);
-              }
-            }, i * 900 + 400);
-          });
-        }, 1200);
+  // 3. Physical Keypad & D-Pad Engine
+  const { activeKey, cursorIndex, setMenu, handleKeyPress } = useIVR({
+    onVibrate: triggerVibrate,
+    onAcceptCall: acceptCall,
+    onEndCall: () => {
+      if (callState === 'RINGING' || callState === 'INCOMING_CALL') {
+        rejectCall();
+      } else {
+        endCall();
       }
-    }
-  }, [phoneState, isVoiceMode, config, pushTimeline, pushTranscript, triggerVibrate]);
+    },
+    onDTMFAction: (digit) => {
+      if (callState === 'MAIN_MENU') {
+        if (digit === '1') {
+          openCropMenu();
+        } else if (digit === '2') {
+          executeStatusCheck();
+        } else if (digit === '3') {
+          executeAIVoiceMode();
+        } else if (digit === '0') {
+          addTurn({
+            speaker: 'USER',
+            message: 'Key 0 pressed (Repeat Menu)',
+            type: 'dtmf',
+          });
+          if (currentPrompt) speak(currentPrompt);
+        } else if (digit === '#') {
+          addTurn({
+            speaker: 'USER',
+            message: 'Key # pressed (End Call)',
+            type: 'dtmf',
+          });
+          endCall();
+        } else {
+          addTurn({
+            speaker: 'USER',
+            message: `Key ${digit} pressed (Invalid Option)`,
+            type: 'dtmf',
+          });
+          handleError();
+        }
+      } else if (callState === 'CROP_MENU') {
+        if (digit === '1') executeBooking('Wheat');
+        else if (digit === '2') executeBooking('Paddy');
+        else if (digit === '3') executeBooking('Jowar');
+        else if (digit === '4') executeBooking('Maize');
+        else if (digit === '0') {
+          addTurn({
+            speaker: 'USER',
+            message: 'Key 0 pressed (Back to Main Menu)',
+            type: 'dtmf',
+          });
+          setMenu('main');
+          openCropMenu(); // or back to main
+        } else {
+          addTurn({
+            speaker: 'USER',
+            message: `Key ${digit} pressed (Invalid Option)`,
+            type: 'dtmf',
+          });
+          handleError();
+        }
+      } else if (callState === 'STATUS_CHECK') {
+        if (digit === '1') openCropMenu();
+        else if (digit === '0') setMenu('main');
+        else if (digit === '#') endCall();
+        else handleError();
+      }
+    },
+    onConfirmAction: () => {
+      if (callState === 'MAIN_MENU') {
+        if (cursorIndex === 0) openCropMenu();
+        else if (cursorIndex === 1) executeStatusCheck();
+        else if (cursorIndex === 2) executeAIVoiceMode();
+        else if (cursorIndex === 3) {
+          addTurn({
+            speaker: 'USER',
+            message: 'Confirmed: Repeat Menu',
+            type: 'dtmf',
+          });
+          if (currentPrompt) speak(currentPrompt);
+        } else if (cursorIndex === 4) endCall();
+      } else if (callState === 'CROP_MENU') {
+        const crops = ['Wheat', 'Paddy', 'Jowar', 'Maize'];
+        if (cursorIndex < 4) {
+          executeBooking(crops[cursorIndex]);
+        } else {
+          setMenu('main');
+        }
+      } else if (callState === 'STATUS_CHECK') {
+        if (cursorIndex === 0) openCropMenu();
+        else if (cursorIndex === 1) setMenu('main');
+        else if (cursorIndex === 2) endCall();
+      }
+    },
+  });
 
-  // ── Voice AI Mode ─────────────────────────────────────────────────────────
-  const handleVoiceMode = useCallback(() => {
-    if (phoneState === 'idle') {
-      // Start call in voice mode
-      setPhoneState('calling');
-      setTranscript([]);
-      setTimeline([]);
-      setBooking(null);
-      triggerVibrate();
-      pushTimeline('Voice AI call started', 'system');
+  // 4. Physical Keyboard listener (0-9, *, #, Enter, Arrows, Escape)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement ||
+        (e.target as HTMLElement)?.isContentEditable
+      ) {
+        return;
+      }
 
-      setTimeout(() => {
-        setPhoneState('connected');
-        setIsVoiceMode(true);
-        pushTimeline('Voice AI connected', 'ai');
+      if (/^[0-9*#]$/.test(e.key)) {
+        e.preventDefault();
+        handleKeyPress(e.key as any);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        handleKeyPress('UP');
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        handleKeyPress('DOWN');
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        if (callState === 'RINGING' || callState === 'INCOMING_CALL') {
+          handleKeyPress('CALL');
+        } else {
+          handleKeyPress('CENTER');
+        }
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        handleKeyPress('END');
+      }
+    };
 
-        const lines = generateVoiceConversation(config);
-        lines.forEach((line, i) => {
-          setTimeout(() => {
-            if (i < lines.length - 1) setIsTyping(true);
-            setTimeout(() => {
-              setIsTyping(false);
-              pushTranscript(line.speaker, line.text);
-              pushTimeline(
-                line.speaker === 'AI' ? `AI: ${line.text.slice(0, 40)}...` : `Farmer: ${line.text}`,
-                line.speaker === 'AI' ? 'ai' : 'user'
-              );
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [callState, handleKeyPress]);
 
-              if (i === lines.length - 1) {
-                // Done
-                const token = generateToken();
-                const result = buildBookingResult(config, token);
-                setBooking(result);
-                pushTimeline('Booking confirmed via Voice AI', 'success');
-                pushTimeline('SMS dispatched', 'sms');
-                setTimeout(() => {
-                  setPhoneState('completed');
-                  setIsVoiceMode(false);
-                }, 1500);
-              }
-            }, 400);
-          }, i * 2200);
-        });
-      }, 2000);
-    } else {
-      setIsVoiceMode((v) => !v);
-    }
-  }, [phoneState, config, pushTimeline, pushTranscript, triggerVibrate]);
+  // Toggle Audio Mute
+  const handleToggleMute = useCallback(() => {
+    const next = !isMuted;
+    setIsMuted(next);
+    audioEngine.setMuted(next);
+  }, [isMuted]);
 
-  // ── Persona Selection ─────────────────────────────────────────────────────
-  const handlePersona = useCallback((p: Persona) => {
-    setActivePersona(p.id);
-    setConfig((c) => ({ ...c, name: p.name, phone: p.phone, language: p.language, crop: p.crop }));
+  // Persona Selection
+  const handleSelectPersona = useCallback(
+    (p: Persona) => {
+      setActivePersonaId(p.id);
+      setCaller({
+        id: p.id,
+        name: p.name,
+        phone: p.phone,
+        village: 'Indri Mandi',
+        district: 'Karnal',
+        state: 'Haryana',
+        language: p.language,
+        crop: p.crop,
+      });
+      addTurn({
+        speaker: 'USER',
+        message: `Selected persona: ${p.name} (${p.crop})`,
+        type: 'dtmf',
+      });
+    },
+    [setCaller, addTurn]
+  );
+
+  // Auto-trigger incoming call demo on mount if idle
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (callState === 'IDLE') {
+        triggerIncomingCall();
+      }
+    }, 1200);
+
+    return () => clearTimeout(timer);
   }, []);
 
-  // ── Status data for display ───────────────────────────────────────────────
-  const callStateLabel: Record<PhoneState, string> = {
-    idle: 'Idle',
-    calling: 'Calling...',
-    connected: 'Connected',
-    ivr_menu: 'IVR Menu',
-    crop_selection: 'Crop Selection',
-    confirmation: 'Confirming',
-    completed: 'Completed',
+  // Format Status String for Telemetry
+  const statusLabels: Record<string, string> = {
+    IDLE: 'Standby / Idle',
+    INCOMING_CALL: 'Incoming Call Ringing',
+    RINGING: 'Incoming Call Ringing',
+    CONNECTED: 'Connecting Line...',
+    GREETING: 'AI Greeting Started',
+    MAIN_MENU: 'Waiting for Input (1-3, #)',
+    CROP_MENU: 'Waiting for Crop Key (1-4)',
+    STATUS_CHECK: 'Booking Status Displayed',
+    AI_SPEAKING: 'AI Voice Listening',
+    PROCESSING: 'Contacting APMC Backend...',
+    SUCCESS: 'Slot Confirmed ✓',
+    SMS_SENT: 'SMS Dispatched ✓',
+    CALL_ENDED: 'Call Ended',
+    ERROR: 'Error Recovery',
   };
-
-  // Nokia 3310 body — no indicator LED needed
 
   return (
     <div className={styles.voicePage}>
-      {/* ══════════════════════ LEFT PANEL ══════════════════════ */}
+      {/* ══════════════════════ LEFT PANEL: CONTROL CENTER ══════════════════════ */}
       <div className={styles.leftPanel}>
-        <div className={styles.panelHeading}>Voice Agent Control Center</div>
+        {/* Header Bar */}
+        <div className={styles.panelHeaderBar}>
+          <div className={styles.panelHeading}>Voice Agent Simulator (Sprint 8A)</div>
+          <button
+            type="button"
+            className={styles.audioToggleBtn}
+            onClick={handleToggleMute}
+            title={isMuted ? 'Unmute Sound Effects' : 'Mute Sound Effects'}
+          >
+            {isMuted ? <VolumeX size={14} /> : <Volume2 size={14} color="#16a34a" />}
+            <span>{isMuted ? 'Audio Muted' : 'Sound ON'}</span>
+          </button>
+        </div>
 
-        {/* One-Click Personas */}
+        {/* Quick Demo Triggers */}
+        <div className={styles.quickActionsBar}>
+          <button
+            type="button"
+            className={styles.triggerCallBtn}
+            onClick={triggerIncomingCall}
+            disabled={callState !== 'IDLE'}
+          >
+            <PhoneCall size={15} />
+            <span>Simulate Incoming Call</span>
+          </button>
+          <button
+            type="button"
+            className={styles.resetPhoneBtn}
+            onClick={resetSession}
+            title="Reset Phone to Standby"
+          >
+            <RotateCcw size={14} />
+          </button>
+        </div>
+
+        {/* Persona Selector */}
         <div className={styles.card}>
-          <div className={styles.cardTitle}>One-Click Demo Personas</div>
+          <div className={styles.cardTitle}>
+            <User size={14} />
+            One-Click Farmer Persona ({caller.name})
+          </div>
           <div className={styles.personaGrid}>
-            {PERSONAS.map((p) => (
+            {DEMO_PERSONAS.map((p) => (
               <button
                 key={p.id}
                 type="button"
-                className={`${styles.personaChip} ${activePersona === p.id ? styles.active : ''}`}
-                onClick={() => handlePersona(p)}
+                className={`${styles.personaChip} ${
+                  activePersonaId === p.id ? styles.active : ''
+                }`}
+                onClick={() => handleSelectPersona(p)}
               >
                 <span className={styles.personaName}>{p.name}</span>
-                <span className={styles.personaLang}>{p.language}</span>
+                <span className={styles.personaCrop}>{p.crop}</span>
               </button>
             ))}
           </div>
         </div>
 
-        {/* Caller Setup */}
+        {/* Live Call Telemetry */}
         <div className={styles.card}>
-          <div className={styles.cardTitle}>Caller Setup</div>
-          <div className={styles.formGrid}>
-            <div className={styles.formGroup}>
-              <label className={styles.formLabel}>Voice Provider</label>
-              <select
-                className={styles.formSelect}
-                value={config.provider}
-                onChange={(e) => setConfig((c) => ({ ...c, provider: e.target.value as VoiceProvider }))}
+          <div className={styles.cardTitle}>
+            <Activity size={14} />
+            Call Telemetry & Backend Status
+          </div>
+          <div className={styles.telemetryGrid}>
+            <div className={styles.telemetryItem}>
+              <span className={styles.telemetryLabel}>Call State</span>
+              <span
+                className={`${styles.telemetryValue} ${
+                  callState !== 'IDLE' ? styles.telemetryActive : ''
+                }`}
               >
-                <option>Sarvam AI</option>
-                <option>Bhashini</option>
-              </select>
+                {statusLabels[callState] || callState}
+              </span>
             </div>
-            <div className={styles.formGroup}>
-              <label className={styles.formLabel}>Language</label>
-              <select
-                className={styles.formSelect}
-                value={config.language}
-                onChange={(e) => setConfig((c) => ({ ...c, language: e.target.value as Language }))}
+            <div className={styles.telemetryItem}>
+              <span className={styles.telemetryLabel}>Voice Engine</span>
+              <span className={styles.telemetryValue}>Sarvam AI (Sprint 9)</span>
+            </div>
+            <div className={styles.telemetryItem}>
+              <span className={styles.telemetryLabel}>Latency</span>
+              <span
+                className={`${styles.telemetryValue} ${
+                  callState !== 'IDLE' ? styles.telemetryActive : ''
+                }`}
               >
-                <option>Hindi</option>
-                <option>Punjabi</option>
-                <option>Haryanvi</option>
-                <option>Bhojpuri</option>
-                <option>English</option>
-              </select>
+                {callState !== 'IDLE' ? '220ms' : '—'}
+              </span>
             </div>
-            <div className={styles.formGroup}>
-              <label className={styles.formLabel}>Crop</label>
-              <select
-                className={styles.formSelect}
-                value={config.crop}
-                onChange={(e) => setConfig((c) => ({ ...c, crop: e.target.value as CropType }))}
+            <div className={styles.telemetryItem}>
+              <span className={styles.telemetryLabel}>STT / TTS</span>
+              <span
+                className={`${styles.telemetryValue} ${
+                  callState !== 'IDLE' ? styles.telemetryActive : ''
+                }`}
               >
-                <option>Wheat</option>
-                <option>Paddy</option>
-                <option>Mustard</option>
-                <option>Cotton</option>
-                <option>Maize</option>
-                <option>Bajra</option>
-                <option>Sugarcane</option>
-              </select>
-            </div>
-            <div className={styles.formGroup}>
-              <label className={styles.formLabel}>Phone</label>
-              <input
-                className={styles.formInput}
-                type="tel"
-                value={config.phone}
-                onChange={(e) => setConfig((c) => ({ ...c, phone: e.target.value }))}
-                placeholder="9812034501"
-              />
-            </div>
-            <div className={`${styles.formGroup} ${styles.fullWidth}`}>
-              <label className={styles.formLabel}>Caller Name</label>
-              <input
-                className={styles.formInput}
-                type="text"
-                value={config.name}
-                onChange={(e) => setConfig((c) => ({ ...c, name: e.target.value }))}
-                placeholder="Ramesh Singh"
-              />
+                {isSpeaking ? 'Transmitting' : callState !== 'IDLE' ? 'Listening' : 'Idle'}
+              </span>
             </div>
           </div>
         </div>
 
-        {/* Live Call Status */}
+        {/* Real-time Conversation History (AI -> USER -> AI...) */}
         <div className={styles.card}>
-          <div className={styles.cardTitle}>Live Call Status</div>
-          <div className={styles.statusGrid}>
-            <div className={styles.statusItem}>
-              <span className={styles.statusLabel}>State</span>
-              <span className={`${styles.statusValue} ${phoneState !== 'idle' ? styles.success : styles.muted}`}>
-                {callStateLabel[phoneState]}
-              </span>
-            </div>
-            <div className={styles.statusItem}>
-              <span className={styles.statusLabel}>Voice Engine</span>
-              <span className={styles.statusValue}>{config.provider}</span>
-            </div>
-            <div className={styles.statusItem}>
-              <span className={styles.statusLabel}>Latency</span>
-              <span className={`${styles.statusValue} ${phoneState !== 'idle' ? styles.success : styles.muted}`}>
-                {phoneState !== 'idle' ? '238ms' : '—'}
-              </span>
-            </div>
-            <div className={styles.statusItem}>
-              <span className={styles.statusLabel}>Speech-to-Text</span>
-              <span className={`${styles.statusValue} ${phoneState !== 'idle' ? styles.success : styles.muted}`}>
-                {phoneState !== 'idle' ? 'Working' : 'Idle'}
-              </span>
-            </div>
-            <div className={styles.statusItem}>
-              <span className={styles.statusLabel}>Text-to-Speech</span>
-              <span className={`${styles.statusValue} ${phoneState !== 'idle' ? styles.success : styles.muted}`}>
-                {phoneState !== 'idle' ? 'Working' : 'Idle'}
-              </span>
-            </div>
-            <div className={styles.statusItem}>
-              <span className={styles.statusLabel}>SMS API</span>
-              <span className={`${styles.statusValue} ${styles.success}`}>Connected</span>
-            </div>
+          <div className={styles.cardTitle}>
+            <History size={14} />
+            Live Conversation History
           </div>
-        </div>
-
-        {/* Event Timeline */}
-        <div className={styles.card}>
-          <div className={styles.cardTitle}>Real-Time Event Timeline</div>
-          <div className={styles.timeline}>
-            {timeline.length === 0 ? (
-              <div className={styles.timelineEmpty}>No events yet. Start a call to see events.</div>
+          <div className={styles.timelineScroll} style={{ maxHeight: 180 }}>
+            {history.length === 0 ? (
+              <div className={styles.timelineEmpty}>
+                No call turns yet. Conversation will record live here.
+              </div>
             ) : (
-              timeline.map((evt) => (
-                <div key={evt.id} className={styles.timelineItem}>
-                  <span className={styles.timelineTime}>{evt.time}</span>
-                  <div className={`${styles.timelineDot} ${styles[evt.type]}`} />
-                  <span className={styles.timelineEvent}>{evt.event}</span>
+              history.map((turn) => (
+                <div key={turn.id} className={styles.timelineRow}>
+                  <span className={styles.timelineTime}>{turn.timestamp}</span>
+                  <span
+                    className={`${styles.timelineDot} ${
+                      turn.speaker === 'AI' ? styles.ai : styles.user
+                    }`}
+                  />
+                  <span className={styles.timelineText}>
+                    <strong>[{turn.speaker}]:</strong> {turn.message}
+                  </span>
                 </div>
               ))
             )}
           </div>
         </div>
 
-        {/* SMS Preview */}
-        <SMSCard
-          visible={!!booking}
-          smsText={booking?.smsText}
-          token={booking?.token}
-        />
-      </div>
-
-      {/* ══════════════════════ RIGHT PANEL ══════════════════════ */}
-      <div className={styles.rightPanel}>
-        {/* Booking Success Banner */}
-        {phoneState === 'completed' && booking && (
-          <div className={styles.bookingSuccess}>
-            <div className={styles.bookingSuccessTitle}>
-              <CheckCircle2 size={16} />
-              Booking Successful
-            </div>
-            <div className={styles.bookingMeta}>
-              <div className={styles.bookingMetaItem}>
-                <span className={styles.bookingMetaLabel}>Token</span>
-                <span className={styles.bookingMetaValue}>{booking.token}</span>
-              </div>
-              <div className={styles.bookingMetaItem}>
-                <span className={styles.bookingMetaLabel}>Date</span>
-                <span className={styles.bookingMetaValue}>{booking.date}</span>
-              </div>
-              <div className={styles.bookingMetaItem}>
-                <span className={styles.bookingMetaLabel}>Slot</span>
-                <span className={styles.bookingMetaValue}>{booking.slotTime}</span>
-              </div>
-              <div className={styles.bookingMetaItem}>
-                <span className={styles.bookingMetaLabel}>SMS</span>
-                <span className={`${styles.bookingMetaValue}`} style={{ fontSize: 11 }}>Sent ✓</span>
-              </div>
-            </div>
+        {/* Notification Center / SMS Preview */}
+        <div className={styles.card}>
+          <div className={styles.cardTitle}>
+            <MessageSquareText size={14} />
+            Recent Notifications
           </div>
-        )}
-
-        {/* Feature Phone */}
-        <div className={`${styles.phoneWrap} ${phoneState === 'calling' ? styles.phoneConnecting : ''}`}>
-          <div className={`${styles.phone} ${isVibrating ? styles.phoneVibrating : ''}`}>
-
-            {/* Earpiece perforated grille */}
-            <div className={styles.earpiece}>
-              <span className={styles.speakerHole} />
-              <span className={styles.speakerHole} />
-              <span className={styles.speakerHole} />
-              <span className={styles.speakerHole} />
-              <span className={styles.speakerHole} />
-            </div>
-
-            {/* LCD in thick black bezel */}
-            <LCD
-              state={phoneState}
-              durationSeconds={durationSecs}
-              lastKey={lastKey}
-              booking={booking}
-              isVoiceMode={isVoiceMode}
-            />
-
-            {/* ── Navigation Area ── */}
-            <div className={styles.navArea}>
-
-              {/* Row 1: Soft Left + Soft Right (above call/end) */}
-              <div className={styles.softKeyRow}>
-                <button
-                  type="button"
-                  className={styles.softKeyBtn}
-                  aria-label="Menu"
-                >
-                  <span className={styles.softKeyLabel}>Menu</span>
-                </button>
-                <button
-                  type="button"
-                  className={styles.softKeyBtn}
-                  aria-label="Back"
-                >
-                  <span className={styles.softKeyLabel}>Back</span>
-                </button>
+          <div className={styles.timelineScroll} style={{ maxHeight: 200 }}>
+            {mockNotifications.length === 0 ? (
+              <div className={styles.timelineEmpty}>
+                No notifications yet.
               </div>
-
-              {/* Row 2: Call | D-pad | End */}
-              <div className={styles.callDpadRow}>
-                <button
-                  type="button"
-                  className={styles.callBtn}
-                  onClick={handleCall}
-                  disabled={phoneState !== 'idle'}
-                  aria-label="Call"
-                >
-                  <Phone size={14} />
-                </button>
-
-                <div className={styles.dpad}>
-                  <div className={styles.dpadCenter} />
-                </div>
-
-                <button
-                  type="button"
-                  className={styles.endBtn}
-                  onClick={handleHangup}
-                  aria-label="End Call"
-                >
-                  <PhoneOff size={14} />
-                </button>
-              </div>
-
-            </div>
-
-            {/* Keypad — immediately below nav */}
-            <Keypad
-              onKey={handleKey}
-              disabled={
-                isVoiceMode ||
-                phoneState === 'idle' ||
-                phoneState === 'calling' ||
-                phoneState === 'connected' ||
-                phoneState === 'confirmation' ||
-                phoneState === 'completed'
-              }
-              pressedKey={pressedKey}
-            />
-
-            {/* Microphone hole */}
-            <div className={styles.micHole}>
-              <span className={styles.micDot} />
-              <span className={styles.micDot} />
-              <span className={styles.micDot} />
-            </div>
-
+            ) : (
+              mockNotifications.map((notif) => {
+                const diffSecs = Math.floor((new Date().getTime() - new Date(notif.timestamp).getTime()) / 1000);
+                const timeAgo = diffSecs < 60 ? `${diffSecs} sec ago` : `${Math.floor(diffSecs / 60)} min ago`;
+                
+                return (
+                  <div key={notif.id} className={styles.timelineRow} style={{ borderBottom: '1px solid var(--border-subtle)', paddingBottom: 8, marginBottom: 8, display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-start' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+                      <span style={{ fontSize: 13, color: 'var(--color-success)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <span className={styles.smsBadge} style={{ padding: '2px 4px', fontSize: 10 }}>Delivered ✓</span>
+                        SMS sent to {notif.farmerName}
+                      </span>
+                      <span className={styles.timelineTime}>{timeAgo}</span>
+                    </div>
+                    <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                      Token <strong>{notif.token}</strong>
+                    </span>
+                  </div>
+                );
+              })
+            )}
           </div>
         </div>
+      </div>
 
-        {/* IVR Hint */}
-        {(phoneState === 'ivr_menu' || phoneState === 'crop_selection') && (
-          <div className={styles.ivrHint}>
-            Press a key on the phone keypad to respond to the IVR
-          </div>
-        )}
-
-        {/* Voice AI Button */}
-        <button
-          type="button"
-          className={`${styles.voiceAiBtn} ${isVoiceMode ? styles.active : ''}`}
-          onClick={handleVoiceMode}
+      {/* ══════════════════════ RIGHT PANEL: NOKIA 3310 PHONE ══════════════════════ */}
+      <div className={styles.rightPanel}>
+        <PhoneShell
+          phoneState={callState}
+          isVibrating={isVibrating}
+          isAISpeaking={isSpeaking}
+          activeKey={activeKey}
+          onCall={() => handleKeyPress('CALL')}
+          onHangup={() => handleKeyPress('END')}
+          onKey={(digit) => handleKeyPress(digit as any)}
+          onArrowUp={() => handleKeyPress('UP')}
+          onArrowDown={() => handleKeyPress('DOWN')}
+          onCenter={() => handleKeyPress('CENTER')}
+          onSoftLeft={() => handleKeyPress('SOFT_LEFT')}
+          onSoftRight={() => handleKeyPress('SOFT_RIGHT')}
         >
-          <div className={`${styles.micPulse} ${isVoiceMode ? styles.pulsing : ''}`}>
-            {isVoiceMode ? <MicOff size={16} /> : <Mic size={16} />}
-          </div>
-          {isVoiceMode ? 'Voice AI Active — Listening...' : '🎤 Speak to Book (Voice AI)'}
-        </button>
-
-        {/* Transcript Panel */}
-        <VoiceTranscript lines={transcript} isTyping={isTyping} />
+          <PhoneScreen
+            phoneState={callState}
+            durationSeconds={durationSeconds}
+            subtitles={subtitles}
+            isAISpeaking={isSpeaking}
+            lastKey={activeKey || undefined}
+            booking={booking}
+            selectedIndex={cursorIndex}
+            statusMessage={statusResult?.message}
+          />
+        </PhoneShell>
       </div>
     </div>
   );

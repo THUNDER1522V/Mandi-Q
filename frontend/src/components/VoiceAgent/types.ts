@@ -3,16 +3,30 @@
 
 export type PhoneState =
   | 'idle'
+  | 'incoming'
   | 'calling'
+  | 'connecting'
   | 'connected'
+  | 'speaking'
+  | 'dtmf_menu'
   | 'ivr_menu'
+  | 'crop_menu'
   | 'crop_selection'
+  | 'processing'
   | 'confirmation'
+  | 'sms_sent'
   | 'completed';
 
 export type Language = 'Hindi' | 'Punjabi' | 'Haryanvi' | 'Bhojpuri' | 'English';
 export type VoiceProvider = 'Sarvam AI' | 'Bhashini';
-export type CropType = 'Wheat' | 'Paddy' | 'Mustard' | 'Cotton' | 'Maize' | 'Bajra' | 'Sugarcane';
+export type CropType = 'Wheat' | 'Paddy' | 'Jowar' | 'Maize' | 'Mustard' | 'Cotton' | 'Bajra' | 'Sugarcane';
+
+export interface CropOption {
+  key: string;
+  code: CropType;
+  nameHindi: string;
+  nameEnglish: string;
+}
 
 export interface Persona {
   id: string;
@@ -58,7 +72,15 @@ export interface CallStatus {
 
 export interface BookingResult {
   token: string;
+  rawTokenNumber?: number;
   slotTime: string;
   date: string;
+  crop?: string;
+  name?: string;
+  farmerName?: string;
+  phone?: string;
+  apmcGate?: string;
+  gate?: string;
+  queuePos?: number | string;
   smsText: string;
 }

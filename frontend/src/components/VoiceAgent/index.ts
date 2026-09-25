@@ -1,2 +1,25 @@
-// VoiceAgent — Public barrel export
+// VoiceAgent — Public barrel exports
 export { VoiceAgentPage } from './VoiceAgentPage';
+export * from './types';
+export * from '../../types/voice';
+export * from './conversation';
+export { audioEngine } from './audio/audioEngine';
+export { voiceAgentService } from '../../services/voiceAgent';
+export { ivrEngine } from '../../services/ivrEngine';
+export { useCallSession } from '../../hooks/useCallSession';
+export { useIVR } from '../../hooks/useIVR';
+export { useSpeech } from '../../hooks/useSpeech';
+export { usePhoneState } from './hooks/usePhoneState';
+export { useDTMF } from './hooks/useDTMF';
+export { useConversation } from './hooks/useConversation';
+export { PhoneShell } from './components/PhoneShell';
+export { PhoneScreen } from './components/PhoneScreen';
+export { LCDStatusBar } from './components/LCDStatusBar';
+export { CallTimer } from './components/CallTimer';
+export { Waveform } from './components/Waveform';
+export { SpeakerAnimation } from './components/SpeakerAnimation';
+export { IncomingCall } from './components/IncomingCall';
+export { SpeakingScreen } from './components/SpeakingScreen';
+export { MenuScreen } from './components/MenuScreen';
+export { ConfirmationScreen } from './components/ConfirmationScreen';
+export { Keypad } from './components/Keypad';

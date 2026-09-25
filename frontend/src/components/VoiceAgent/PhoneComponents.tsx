@@ -289,24 +289,24 @@ const KEYS = [
 ];
 
 export const Keypad: React.FC<KeypadProps> = memo(({ onKey, disabled, pressedKey }) => (
-  <div className={styles.keypad}>
+  <div className={styles.keypadGrid}>
     {KEYS.map(({ digit, letters }) => (
       <button
         key={digit}
         type="button"
-        className={`${styles.key} ${disabled ? styles.disabled : ''} ${pressedKey === digit ? styles.pressed : ''}`}
+        className={`${styles.tactileKey} ${disabled ? styles.keyDisabled : ''} ${pressedKey === digit ? styles.keyPressed : ''}`}
         onClick={() => !disabled && onKey(digit)}
         aria-label={`Key ${digit}`}
       >
         {digit === '*' || digit === '#' ? (
           <>
-            <span className={styles.keySpecial}>{digit}</span>
-            {letters && <span className={styles.keyLetters}>{letters}</span>}
+            <span className={styles.keyDigit}>{digit}</span>
+            {letters && <span className={styles.keySubLetters}>{letters}</span>}
           </>
         ) : (
           <>
             <span className={styles.keyDigit}>{digit}</span>
-            {letters && <span className={styles.keyLetters}>{letters}</span>}
+            {letters && <span className={styles.keySubLetters}>{letters}</span>}
           </>
         )}
       </button>
